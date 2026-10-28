@@ -1,0 +1,9 @@
+node_modules
+.next
+.env*
+!.env.example
+npm-debug.log*
+/bin/*.exe
+/bin/yt-dlp
+/bin/ffmpeg*
+video-downloader.zip

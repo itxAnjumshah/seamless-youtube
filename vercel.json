@@ -1,0 +1,11 @@
+{
+  "fluid": true,
+  "functions": {
+    "app/api/analyze/route.js": {
+      "maxDuration": 300
+    },
+    "app/api/download/route.js": {
+      "maxDuration": 300
+    }
+  }
+}
