@@ -3,7 +3,9 @@ import path from "path";
 import { Innertube, UniversalCache } from "youtubei.js";
 import { getYouTubeVideoId, parseRequestedFormat, qualityLabel, safeFileName } from "./youtube-id";
 
-const CLIENTS = ["ANDROID", "IOS", "TV_EMBEDDED", "WEB"];
+// ANDROID_VR and WEB_EMBEDDED are the clients least likely to trigger
+// YouTube's datacenter/bot check on hosts like Render.
+const CLIENTS = ["ANDROID_VR", "WEB_EMBEDDED", "TV", "TV_EMBEDDED", "ANDROID", "IOS", "WEB"];
 let tubePromise;
 
 function formatHasAudio(format) {
@@ -25,12 +27,34 @@ function formatSize(bytes) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function youtubeSessionOptions() {
+  const cookie = process.env.YOUTUBE_COOKIE?.trim();
+  const visitorData = process.env.YOUTUBE_VISITOR_DATA?.trim();
+  const poToken = process.env.YOUTUBE_PO_TOKEN?.trim();
+  return {
+    generate_session_locally: true,
+    retrieve_player: true,
+    cache: new UniversalCache(true, path.join(os.tmpdir(), "youtubei")),
+    ...(cookie ? { cookie } : {}),
+    ...(visitorData ? { visitor_data: visitorData } : {}),
+    ...(poToken ? { po_token: poToken } : {}),
+  };
+}
+
+function isBotBlockError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("not a bot") ||
+    text.includes("confirm you’re a human") ||
+    text.includes("confirm you're a human") ||
+    text.includes("streaming data not available") ||
+    text.includes("login required")
+  );
+}
+
 async function getTube() {
   if (!tubePromise) {
-    tubePromise = Innertube.create({
-      generate_session_locally: true,
-      cache: new UniversalCache(true, path.join(os.tmpdir(), "youtubei")),
-    }).catch((error) => {
+    tubePromise = Innertube.create(youtubeSessionOptions()).catch((error) => {
       tubePromise = null;
       throw error;
     });
@@ -70,7 +94,9 @@ async function getPlayableInfo(videoId) {
         return { yt, info, client, progressive, adaptive };
       }
     } catch (error) {
-      lastError = error;
+      lastError = isBotBlockError(error)
+        ? new Error("YouTube blocked this request from the server. Try again later, or run the app on your computer.")
+        : error;
     }
   }
 
@@ -168,7 +194,7 @@ export async function streamYouTubeInnertube(url, formatId) {
   }
 
   const videoId = getYouTubeVideoId(url);
-  const { yt, info, progressive, adaptive } = await getPlayableInfo(videoId);
+  const { yt, info, client, progressive, adaptive } = await getPlayableInfo(videoId);
   const audioOnly = requested.kind === "audio";
   const selected = audioOnly
     ? pickAudio(adaptive, progressive)
@@ -178,6 +204,28 @@ export async function streamYouTubeInnertube(url, formatId) {
     throw new Error("Unable to resolve a downloadable YouTube file. Try a lower quality.");
   }
 
+  const extension = audioOnly ? "m4a" : "mp4";
+  const filename = safeFileName(info.basic_info?.title || "youtube-video", extension);
+  const size = Number(selected.content_length || 0);
+
+  try {
+    const stream = await yt.download(videoId, {
+      type: audioOnly ? "audio" : "video+audio",
+      quality: requested.kind === "height" ? `${requested.height}p` : "bestefficiency",
+      format: "mp4",
+      client,
+    });
+    return {
+      stream,
+      filename,
+      extension,
+      contentType: audioOnly ? "audio/mp4" : "video/mp4",
+      size,
+    };
+  } catch (error) {
+    console.error("Innertube download() failed, trying direct URL:", error);
+  }
+
   const mediaUrl = await decipherUrl(yt, selected);
   if (!mediaUrl) {
     throw new Error("Unable to resolve a downloadable YouTube file. Try a lower quality.");
@@ -185,8 +233,11 @@ export async function streamYouTubeInnertube(url, formatId) {
 
   const upstream = await fetch(mediaUrl, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
       Accept: "*/*",
+      Referer: "https://www.youtube.com/",
+      Origin: "https://www.youtube.com",
     },
     redirect: "follow",
   });
@@ -195,17 +246,14 @@ export async function streamYouTubeInnertube(url, formatId) {
     throw new Error("YouTube could not provide this file from the server. Try again in a moment.");
   }
 
-  const extension = audioOnly ? "m4a" : "mp4";
   const contentType =
     upstream.headers.get("content-type") || (audioOnly ? "audio/mp4" : "video/mp4");
-  const size = Number(selected.content_length || upstream.headers.get("content-length") || 0);
-  const filename = safeFileName(info.basic_info?.title || "youtube-video", extension);
 
   return {
     stream: upstream.body,
     filename,
     extension,
     contentType,
-    size,
+    size: size || Number(upstream.headers.get("content-length") || 0),
   };
 }

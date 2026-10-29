@@ -183,7 +183,16 @@ function runProcess(command, args, { timeoutMs = 90000, onStderr } = {}) {
 }
 
 function youtubeClientArgs() {
-  return [
+  const extractorArgs = [
+    "youtube:player_client=android_vr,web_embedded,tv",
+    "player_skip=webpage,configs",
+  ];
+  const poToken = process.env.YOUTUBE_PO_TOKEN?.trim();
+  if (poToken) {
+    extractorArgs.push(`po_token=web.gvs+${poToken}`);
+  }
+
+  const args = [
     "--no-playlist",
     "--no-warnings",
     "--newline",
@@ -192,8 +201,15 @@ function youtubeClientArgs() {
     "--fragment-retries",
     "3",
     "--extractor-args",
-    "youtube:player_client=android,ios,web",
+    extractorArgs.join(";"),
   ];
+
+  const cookie = process.env.YOUTUBE_COOKIE?.trim();
+  if (cookie) {
+    args.push("--add-header", `Cookie:${cookie}`);
+  }
+
+  return args;
 }
 
 function runYtDlp(args, { timeoutMs = 90000, onProgress } = {}) {
@@ -514,6 +530,8 @@ export async function streamYouTubeServer(url, formatId) {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
       Accept: "*/*",
+      Referer: "https://www.youtube.com/",
+      Origin: "https://www.youtube.com",
     },
     redirect: "follow",
   });
